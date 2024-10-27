@@ -1,0 +1,56 @@
+@startuml
+
+actor User
+
+participant GUI
+participant MultimediaController
+participant SerialComsController
+participant ImageProcessingService
+
+User -> GUI: start_processing()
+activate GUI
+
+GUI -> SerialComsController: start_process()
+activate SerialComsController
+SerialComsController -> SerialComsController: send_command("START")
+deactivate SerialComsController
+
+GUI -> MultimediaController: capture_images()
+activate MultimediaController
+MultimediaController -> MultimediaController: capture_images()
+MultimediaController -> MultimediaController: capture_images()
+MultimediaController -> MultimediaController: capture_images()
+MultimediaController -> MultimediaController: capture_images()
+deactivate MultimediaController
+
+alt Images captured successfully
+    loop for each image
+        GUI -> ImageProcessingService: process_image_for_defects(image_path)
+        activate ImageProcessingService
+        ImageProcessingService -> ImageProcessingService: process_image_for_defects()
+        deactivate ImageProcessingService
+
+        alt Defects found
+            GUI -> SerialComsController: handle_defect()
+            activate SerialComsController
+            SerialComsController -> SerialComsController: send_command("DEFECT")
+            deactivate SerialComsController
+        else No defects found
+            GUI -> SerialComsController: handle_normal()
+            activate SerialComsController
+            SerialComsController -> SerialComsController: send_command("NORMAL")
+            deactivate SerialComsController
+        end
+    end
+else Failed to capture images
+    GUI -> GUI: show_error_dialog("Processing Error", "Failed to capture images")
+end
+
+GUI -> SerialComsController: reset_all_devices()
+activate SerialComsController
+SerialComsController -> SerialComsController: send_command("RESET")
+deactivate SerialComsController
+
+deactivate GUI
+
+@enduml

@@ -1,0 +1,38 @@
+@startuml
+start
+
+:Initialize GUI;
+:Initialize MultimediaController;
+:Initialize SerialComsController;
+:Initialize ImageProcessingService;
+
+if (Initialization successful?) then (yes)
+    :Setup GUI;
+    :Wait for user to start processing;
+    while (Processing active?) is (yes)
+        :Start process on Arduino;
+        :Capture images;
+        if (Images captured successfully?) then (yes)
+            :Process each image;
+            while (More images to process?) is (yes)
+                :Process image for defects;
+                if (Defects found?) then (yes)
+                    :Handle defect;
+                else (no)
+                    :Handle normal;
+                endif
+            endwhile
+            :Update progress;
+            :Show completion dialog;
+            :Add history entry;
+        else (no)
+            :Show error dialog;
+        endif
+        :Reset all devices;
+    endwhile
+else (no)
+    :Show initialization error dialog;
+endif
+
+stop
+@enduml

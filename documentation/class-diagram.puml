@@ -1,0 +1,73 @@
+@startuml
+
+class MultimediaController {
+    -logger: Logger
+    -cap: VideoCapture
+    +__init__()
+    +capture_images(save_folder: str): List[str]
+    +__del__()
+}
+
+class SerialComsController {
+    -logger: Logger
+    -ser: Serial
+    +__init__(port: str, baudrate: int, timeout: int)
+    +send_command(command: str)
+    +start_process()
+    +handle_defect()
+    +handle_normal()
+    +reset_all_devices()
+    +__del__()
+}
+
+class ImageProcessingService {
+    -logger: Logger
+    +__init__()
+    +process_image_for_defects(image_path: str): Tuple[ndarray, bool]
+}
+
+class GUI {
+    -logger: Logger
+    -multimedia_controller: MultimediaController
+    -serial_controller: SerialComsController
+    -image_processor: ImageProcessingService
+    -processing_active: bool
+    -current_display: str
+    -history_data: List[Dict[str, Any]]
+    -main_container: Frame
+    -notebook: Notebook
+    -processing_tab: Frame
+    -history_tab: Frame
+    -frames: List[Labelframe]
+    -quality_progress: Progressbar
+    -quality_label: Label
+    -status_value: Label
+    -title_label: Label
+    +__init__()
+    +setup_gui()
+    +setup_processing_tab()
+    +setup_history_tab()
+    +refresh_history()
+    +show_completion_dialog(duration: float)
+    +processing_sequence()
+    +show_error_dialog(title: str, message: str)
+    +load_history(): List[Dict[str, Any]]
+    +add_history_entry(duration: float, status: str, images_processed: int)
+    +save_history()
+    +clear_history()
+    +_perform_clear_history()
+    +create_menu_panel()
+    +create_image_display()
+    +create_quality_indicator()
+    +load_and_display_image(frame: Labelframe, image_path: str)
+    +update_progress(value: int, status_text: str, status_style: str)
+    +clear_frame(frame: Labelframe)
+    +start_processing()
+    +reset_display()
+}
+
+MultimediaController --> GUI
+SerialComsController --> GUI
+ImageProcessingService --> GUI
+
+@enduml
