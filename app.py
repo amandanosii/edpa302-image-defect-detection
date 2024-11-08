@@ -147,10 +147,12 @@ class ImageProcessingService:
         try:
             self.logger.info(f"Processing image for defects: {image_path}")
 
+            # Read and process image
             image = sitk.ReadImage(image_path)
             image_array = sitk.GetArrayFromImage(image)
             image_gray = np.mean(image_array, axis=2)
 
+            # Threshold and mask
             image_gray_sitk = sitk.GetImageFromArray(image_gray)
             otsu_filter = sitk.OtsuThresholdImageFilter()
             gray_image = sitk.Cast(
@@ -163,6 +165,7 @@ class ImageProcessingService:
             result_image = sitk.GetArrayFromImage(masked_image)
 
             contours = measure.find_contours(result_image, level=0.5)
+
             if not contours:
                 self.logger.warning("No contours found in the image")
                 return result_image, False
@@ -180,17 +183,51 @@ class ImageProcessingService:
             bounding_box_area = width * height
 
             rectangularity = object_area / bounding_box_area
+
+            # Convert to RGB for annotation
+            result_rgb = cv2.cvtColor(result_image.astype(np.uint8),
+                                      cv2.COLOR_GRAY2RGB)
+
+            # Draw bounding box
+            cv2.rectangle(result_rgb, (int(min_col), int(min_row)),
+                          (int(max_col), int(max_row)), (255, 0, 0), 2)
+
+            # Add rectangularity score
+            text = f"         {rectangularity:.3f}"
+            cv2.putText(result_rgb, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                        1, (0, 255, 255), 2)
+
             self.logger.info(
                 f"Image processing complete. Rectangularity: {rectangularity:.4f}"
             )
 
-            # Determine if there are defects (you may need to adjust these thresholds)
+            # Determine if there are defects
             has_defects = rectangularity < 0.7 or rectangularity > 0.95
 
-            return result_image, has_defects
+            return result_rgb, has_defects
+
+        except Exception as e:
+            self.logger.error(f"Error processing image: {e}")
+            return None, False
         except Exception as e:
             self.logger.error(f"Error processing image: {e}")
             return None, True
+
+
+class TextHandler(logging.Handler):
+
+    def __init__(self, text_widget):
+        super().__init__()
+        self.text_widget = text_widget
+
+    def emit(self, record):
+        msg = self.format(record)
+
+        def append():
+            self.text_widget.insert(ttk.END, msg + '\n')
+            self.text_widget.see(ttk.END)
+
+        self.text_widget.after(0, append)
 
 
 class GUI(ttk.Window):
@@ -221,6 +258,14 @@ class GUI(ttk.Window):
         self.history_data = self.load_history()
 
         self.setup_gui()
+
+        # Add text handler to logger
+        text_handler = TextHandler(self.log_text)
+        formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s')
+        text_handler.setFormatter(formatter)
+        logging.getLogger().addHandler(text_handler)
+
         self.logger.info("GUI setup complete")
 
     def setup_gui(self):
@@ -241,11 +286,6 @@ class GUI(ttk.Window):
 
         self.setup_processing_tab()
         self.setup_history_tab()
-
-    def setup_processing_tab(self):
-        self.create_menu_panel()
-        self.create_image_display()
-        self.create_quality_indicator()
 
     def setup_history_tab(self):
         # Create controls frame
@@ -349,8 +389,8 @@ class GUI(ttk.Window):
                 self.load_and_display_image(self.frames[i], image_path)
 
                 # Process image
-                result_image, has_defects = self.image_processor.process_image_for_defects(
-                    image_path)
+                has_defects = self.process_and_update_display(i, image_path)
+
                 if has_defects:
                     defects_found = True
                     self.logger.warning(f"Defects found in image {i+1}")
@@ -385,6 +425,27 @@ class GUI(ttk.Window):
             self.start_button.configure(state="normal")
             self.start_button.configure(state="normal")
             self.processing_active = False
+
+    def process_and_update_display(self, frame_index, image_path):
+        try:
+            # Display original image
+            self.load_and_display_image(self.frames[frame_index], image_path)
+
+            # Process image
+            result_image, has_defects = self.image_processor.process_image_for_defects(
+                image_path)
+
+            # Convert result_image to PhotoImage and display
+            if isinstance(result_image, np.ndarray):
+                result_pil = Image.fromarray(result_image)
+                self.load_and_display_image(self.frames[frame_index],
+                                            image_path,
+                                            custom_image=result_pil)
+
+            return has_defects
+        except Exception as e:
+            self.logger.error(f"Error processing image: {e}")
+            return False
 
     def show_error_dialog(self, title, message):
         dialog = MessageDialog(title=title, message=message, buttons=["OK"])
@@ -486,7 +547,48 @@ class GUI(ttk.Window):
                                        text=f"Frame {i*2+j+1}",
                                        bootstyle="primary")
                 frame.grid(row=i, column=j, padx=5, pady=5, sticky="nsew")
+                frame.config(width=200,
+                             height=200)  # Set a fixed size for the frames
                 self.frames.append(frame)
+
+    def load_and_display_image(self, frame, image_path, custom_image=None):
+        try:
+            # Clear existing widgets in frame
+            for widget in frame.winfo_children():
+                widget.destroy()
+
+            # Use custom image if provided, otherwise load from path
+            image = custom_image if custom_image else Image.open(image_path)
+
+            # Rest of your existing load_and_display_image code...
+            frame.update_idletasks()
+            frame_width = frame.winfo_width() - 16
+            frame_height = frame.winfo_height() - 16
+
+            if frame_width > 1 and frame_height > 1:
+                frame_ratio = frame_width / frame_height
+                image_ratio = image.width / image.height
+
+                if image_ratio > frame_ratio:
+                    new_height = frame_height
+                    new_width = int(new_height * image_ratio)
+                else:
+                    new_width = frame_width
+                    new_height = int(new_width / image_ratio)
+
+                image = image.resize((new_width, new_height), Image.LANCZOS)
+
+            photo = ImageTk.PhotoImage(image)
+            label = ttk.Label(frame, image=photo)
+            label.image = photo
+            label.place(relx=0.5, rely=0.5, anchor="center")
+
+        except Exception as e:
+            self.logger.error(f"Error loading image: {e}")
+            error_label = ttk.Label(frame,
+                                    text="Error loading image",
+                                    bootstyle="danger")
+            error_label.pack(expand=True, fill=BOTH)
 
     def create_quality_indicator(self):
         quality_frame = ttk.Frame(self.processing_tab)
@@ -513,30 +615,28 @@ class GUI(ttk.Window):
                                       font=("Helvetica", 12, "bold"))
         self.status_value.pack(side=TOP, pady=2)
 
-    def load_and_display_image(self, frame, image_path):
-        try:
-            image = Image.open(image_path)
-            aspect_ratio = image.width / image.height
-            max_size = 300
-            if image.width > image.height:
-                new_width, new_height = max_size, int(max_size / aspect_ratio)
-            else:
-                new_height, new_width = max_size, int(max_size * aspect_ratio)
-            image = image.resize((new_width, new_height), Image.LANCZOS)
-            photo = ImageTk.PhotoImage(image)
-            label = ttk.Label(frame, image=photo)
-            label.image = photo
-            label.pack(expand=True, fill=BOTH)
-        except Exception as e:
-            print(f"Error loading image: {e}")
-            error_label = ttk.Label(frame,
-                                    text="Error loading image",
-                                    bootstyle="danger")
-            error_label.pack(expand=True, fill=BOTH)
-
     def update_progress(self, value, status_text, status_style="success"):
         self.quality_progress['value'] = value
         self.status_value.configure(text=status_text, bootstyle=status_style)
+
+    def create_log_display(self):
+        log_frame = ttk.Frame(self.processing_tab)
+        log_frame.pack(side=TOP, fill=BOTH, padx=10, pady=10, expand=True)
+
+        self.log_text = ttk.Text(log_frame, height=10)
+        self.log_text.pack(side=LEFT, fill=BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(log_frame,
+                                  orient='vertical',
+                                  command=self.log_text.yview)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+
+    def setup_processing_tab(self):
+        self.create_menu_panel()
+        self.create_image_display()
+        self.create_log_display()
+        self.create_quality_indicator()
 
     def clear_frame(self, frame):
         for widget in frame.winfo_children():
