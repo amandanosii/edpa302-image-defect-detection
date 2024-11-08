@@ -378,22 +378,33 @@ class GUI(ttk.Window):
 
             # Process each image
             defects_found = False
+            result_pils = []
             for i, image_path in enumerate(captured_images):
                 if not self.processing_active:
                     break
 
                 self.update_progress(50 + i * 10, f"Processing Image {i+1}/4",
                                      "warning")
+                self.logger.info(f"Processing image {i+1}: {image_path}")
 
                 # Display original image
                 self.load_and_display_image(self.frames[i], image_path)
 
                 # Process image
-                has_defects = self.process_and_update_display(i, image_path)
+                has_defects, result_pil = self.process_and_update_display(
+                    i, image_path)
 
                 if has_defects:
                     defects_found = True
                     self.logger.warning(f"Defects found in image {i+1}")
+
+                result_pils.append(result_pil)
+
+            for i, result_pil in enumerate(result_pils):
+                time.sleep(2)
+                self.load_and_display_image(self.frames[i],
+                                            '',
+                                            custom_image=result_pil)
 
             # Handle results
             if defects_found:
@@ -428,9 +439,6 @@ class GUI(ttk.Window):
 
     def process_and_update_display(self, frame_index, image_path):
         try:
-            # Display original image
-            self.load_and_display_image(self.frames[frame_index], image_path)
-
             # Process image
             result_image, has_defects = self.image_processor.process_image_for_defects(
                 image_path)
@@ -438,11 +446,8 @@ class GUI(ttk.Window):
             # Convert result_image to PhotoImage and display
             if isinstance(result_image, np.ndarray):
                 result_pil = Image.fromarray(result_image)
-                self.load_and_display_image(self.frames[frame_index],
-                                            image_path,
-                                            custom_image=result_pil)
 
-            return has_defects
+            return has_defects, result_pil
         except Exception as e:
             self.logger.error(f"Error processing image: {e}")
             return False
