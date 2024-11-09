@@ -55,13 +55,15 @@ TITLE = "Automatic Quality Control System"
 
 class MultimediaController:
 
-    def __init__(self):
+    def __init__(self, camera_index=0):
         self.logger = logging.getLogger('QualityControl.Multimedia')
+        self.camera_index = camera_index
+
         try:
-            self.cap = cv2.VideoCapture(0)
+            self.cap = cv2.VideoCapture(self.camera_index)
             if not self.cap.isOpened():
                 raise Exception("Could not open video device")
-            self.logger.info("Webcam initialized successfully")
+            self.logger.info(f"Webcam {camera_index} initialized successfully")
         except Exception as e:
             self.logger.error(f"Failed to initialize webcam: {e}")
             raise
@@ -324,6 +326,9 @@ class GUI(ttk.Window):
                                        *baudrate_options)
         baudrate_menu.pack(side=LEFT, padx=5)
 
+        # Add camera settings first
+        self.setup_camera_settings(settings_frame)
+
         # Save button
         save_btn = ttk.Button(settings_frame,
                               text="Save Settings",
@@ -354,7 +359,8 @@ class GUI(ttk.Window):
     def save_settings(self):
         settings = {
             "port": self.port_var.get(),
-            "baudrate": self.baudrate_var.get()
+            "baudrate": self.baudrate_var.get(),
+            "camera": self.camera_var.get()
         }
         try:
             # Test port connection before saving
@@ -375,6 +381,9 @@ class GUI(ttk.Window):
             MessageDialog(title="Settings Saved",
                           message="Settings updated successfully",
                           buttons=["OK"]).show()
+
+            self.load_settings()
+
         except serial.SerialException as e:
             self.logger.error(f"Error with serial port: {e}")
             self.show_error_dialog(
@@ -385,11 +394,119 @@ class GUI(ttk.Window):
             self.logger.error(f"Error saving settings: {e}")
             self.show_error_dialog("Settings Error", str(e))
 
+    def setup_camera_settings(self, settings_frame):
+        # Camera settings group
+        camera_frame = ttk.LabelFrame(settings_frame, text="Camera Settings")
+        camera_frame.pack(fill=X, pady=5)
+
+        # Camera selection
+        ttk.Label(camera_frame, text="Camera:").pack(side=LEFT, padx=5)
+        self.camera_var = ttk.StringVar(value="0")
+        self.camera_combo = ttk.Combobox(camera_frame,
+                                         textvariable=self.camera_var)
+        self.camera_combo['values'] = self.scan_cameras()
+        self.camera_combo.pack(side=LEFT, padx=5)
+
+        # Refresh cameras button
+        ttk.Button(camera_frame,
+                   text="↻",
+                   width=3,
+                   command=self.refresh_cameras).pack(side=LEFT, padx=2)
+
+        # Preview button
+        self.preview_button = ttk.Button(camera_frame,
+                                         text="Start Preview",
+                                         command=self.toggle_preview)
+        self.preview_button.pack(side=LEFT, padx=5)
+
+        # Preview frame
+        self.preview_frame = ttk.Frame(settings_frame, height=300)
+        self.preview_frame.pack(fill=X, pady=5)
+        self.preview_label = ttk.Label(self.preview_frame)
+        self.preview_label.pack()
+
+        self.preview_active = False
+        self.preview_thread = None
+
+    def scan_cameras(self):
+        """Scan for available cameras"""
+        cameras = []
+
+        for i in range(3):
+            try:
+                cap = cv2.VideoCapture(i)
+
+                if cap.isOpened():
+                    cameras.append(str(i))
+                    cap.release()
+
+            except Exception:
+                pass
+
+        return cameras or ['0']
+
+    def refresh_cameras(self):
+        cameras = self.scan_cameras()
+        self.camera_combo['values'] = cameras
+        if cameras and self.camera_var.get() not in cameras:
+            self.camera_var.set(cameras[0])
+
+    def toggle_preview(self):
+        if not self.preview_active:
+            self.start_preview()
+            self.preview_button.configure(text="Stop Preview")
+        else:
+            self.stop_preview()
+            self.preview_button.configure(text="Start Preview")
+
+    def start_preview(self):
+        self.preview_active = True
+        self.preview_thread = Thread(target=self.preview_loop, daemon=True)
+        self.preview_thread.start()
+
+    def stop_preview(self):
+        self.preview_active = False
+        if self.preview_thread:
+            self.preview_thread.join()
+            self.preview_label.configure(image=None)
+
+    def preview_loop(self):
+        try:
+            cap = cv2.VideoCapture(int(self.camera_var.get()))
+
+            while self.preview_active:
+                ret, frame = cap.read()
+                if ret:
+                    # Resize frame for preview
+                    frame = cv2.resize(frame, (640, 480))
+
+                    # Convert to PIL format
+                    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    image = Image.fromarray(image)
+                    photo = ImageTk.PhotoImage(image=image)
+
+                    # Update preview
+                    self.preview_label.configure(image=photo)
+                    self.preview_label.image = photo
+
+                time.sleep(0.03)  # ~30 FPS
+
+        except Exception as e:
+            self.logger.error(f"Preview error: {e}")
+            self.show_error_dialog("Preview Error", str(e))
+
+        finally:
+            cap.release()
+
     def load_settings(self):
         """Load settings from JSON file and apply them"""
         try:
             # Default settings
-            default_settings = {"port": "COM8", "baudrate": "9600"}
+            default_settings = {
+                "port": "COM8",
+                "baudrate": "9600",
+                "camera": "0"
+            }
 
             if os.path.exists('settings.json'):
                 with open('settings.json', 'r') as f:
@@ -401,13 +518,19 @@ class GUI(ttk.Window):
             self.port_var.set(settings.get("port", default_settings["port"]))
             self.baudrate_var.set(
                 settings.get("baudrate", default_settings["baudrate"]))
+            self.camera_var.set(
+                settings.get("camera", default_settings["camera"]))
 
             # Update initial serial connection with loaded settings
             self.serial_controller = SerialComsController(
                 port=settings["port"], baudrate=int(settings["baudrate"]))
 
+            # Update multimedia controller with camera settings
+            self.multimedia_controller = MultimediaController(
+                camera_index=int(settings["camera"]))
+
             self.logger.info(
-                f"Settings loaded - Port: {settings['port']}, Baudrate: {settings['baudrate']}"
+                f"Settings loaded - Port: {settings['port']}, Baudrate: {settings['baudrate']}, Camera: {settings['camera']}"
             )
 
         except Exception as e:
@@ -415,6 +538,7 @@ class GUI(ttk.Window):
             # Fall back to defaults on error
             self.port_var.set("COM8")
             self.baudrate_var.set("9600")
+            self.camera_var.set("0")
 
     def setup_history_tab(self):
         # Create controls frame
@@ -662,7 +786,7 @@ class GUI(ttk.Window):
                                        text="RESET",
                                        bootstyle="success",
                                        width=20,
-                                       command=self.reset_display)
+                                       command=self.reset)
         self.reset_button.pack(fill=X, pady=5)
 
     def create_image_display(self):
@@ -793,14 +917,15 @@ class GUI(ttk.Window):
         if not self.processing_active:
             Thread(target=self.processing_sequence, daemon=True).start()
 
-    def reset_display(self):
+    def reset(self):
         for frame in self.frames:
             self.clear_frame(frame)
 
         self.serial_controller.reset_all_devices()
         self.start_button.configure(state="disabled")
+        self.load_settings()
 
-        time.sleep(5)
+        time.sleep(2)
 
         self.start_button.configure(state="normal")
         self.start_button.configure(state="normal")
