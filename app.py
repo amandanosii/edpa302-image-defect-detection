@@ -4,7 +4,7 @@ application is a simple quality control system that uses an Arduino Mega
 for controlling motors, LCD displays, buzzers and Webcam
 """
 
-# pip install ttkbootstrap pillow simpleitk numpy scikit-image opencv-python
+# pip install ttkbootstrap pillow simpleitk numpy scikit-image opencv-python pyserial
 
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import LEFT, RIGHT, BOTTOM, Y, X, BOTH, TOP
@@ -99,7 +99,7 @@ class MultimediaController:
 
 class SerialComsController:
 
-    def __init__(self, port='COM9', baudrate=9600, timeout=1):
+    def __init__(self, port='COM8', baudrate=9600, timeout=1):
         self.logger = logging.getLogger('QualityControl.Serial')
         self.ser = None
         try:
@@ -232,6 +232,10 @@ class TextHandler(logging.Handler):
 
 class GUI(ttk.Window):
 
+    serial_controller: None | SerialComsController = None
+    multimedia_controller: None | MultimediaController = None
+    image_processor: None | ImageProcessingService = None
+
     def __init__(self):
         super().__init__(themename="cyborg")
         self.logger = logging.getLogger('QualityControl.GUI')
@@ -242,7 +246,6 @@ class GUI(ttk.Window):
 
         try:
             self.multimedia_controller = MultimediaController()
-            self.serial_controller = SerialComsController(port='COM9')
             self.image_processor = ImageProcessingService()
             self.logger.info("All controllers initialized successfully")
         except Exception as e:
@@ -251,7 +254,6 @@ class GUI(ttk.Window):
                 "Initialization Error",
                 "Failed to initialize system components. Check the log for details."
             )
-            return
 
         self.processing_active = False
         self.current_display = "images"
@@ -280,12 +282,139 @@ class GUI(ttk.Window):
         # Create tabs
         self.processing_tab = ttk.Frame(self.notebook)
         self.history_tab = ttk.Frame(self.notebook)
+        self.settings_tab = ttk.Frame(self.notebook)
 
         self.notebook.add(self.processing_tab, text="Processing")
         self.notebook.add(self.history_tab, text="History")
+        self.notebook.add(self.settings_tab, text="Settings")
 
+        self.setup_settings_tab()
         self.setup_processing_tab()
         self.setup_history_tab()
+        self.load_settings()
+
+    # Add this new method to GUI class
+    def setup_settings_tab(self):
+        settings_frame = ttk.Frame(self.settings_tab)
+        settings_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
+
+        # Serial settings group
+        serial_frame = ttk.LabelFrame(settings_frame,
+                                      text="Serial Communication")
+        serial_frame.pack(fill=X, pady=5)
+
+        # COM Port selection
+        ttk.Label(serial_frame, text="COM Port:").pack(side=LEFT, padx=5)
+        self.port_var = ttk.StringVar(value="COM8")
+        self.port_combo = ttk.Combobox(serial_frame,
+                                       textvariable=self.port_var)
+        self.port_combo['values'] = self.scan_com_ports()
+        self.port_combo.pack(side=LEFT, padx=5)
+
+        # Refresh ports button
+        ttk.Button(serial_frame, text="↻", width=3,
+                   command=self.refresh_ports).pack(side=LEFT, padx=2)
+
+        # Baudrate selection
+        ttk.Label(serial_frame, text="Baudrate:").pack(side=LEFT, padx=5)
+        self.baudrate_var = ttk.StringVar(value="9600")
+        baudrate_options = ["9600", "19200", "38400", "57600", "115200"]
+        baudrate_menu = ttk.OptionMenu(serial_frame, self.baudrate_var,
+                                       self.baudrate_var.get(),
+                                       *baudrate_options)
+        baudrate_menu.pack(side=LEFT, padx=5)
+
+        # Save button
+        save_btn = ttk.Button(settings_frame,
+                              text="Save Settings",
+                              bootstyle="success",
+                              command=self.save_settings)
+        save_btn.pack(pady=10)
+
+    def scan_com_ports(self):
+        """Scan for available COM ports"""
+        ports = []
+        for i in range(256):
+            try:
+                port = f'COM{i}'
+                s = serial.Serial(port)
+                s.close()
+                ports.append(port)
+            except (OSError, serial.SerialException):
+                pass
+        return ports or ['COM8']  # Fallback to COM8 if no ports found
+
+    def refresh_ports(self):
+        """Refresh the available COM ports list"""
+        ports = self.scan_com_ports()
+        self.port_combo['values'] = ports
+        if ports and self.port_var.get() not in ports:
+            self.port_var.set(ports[0])
+
+    def save_settings(self):
+        settings = {
+            "port": self.port_var.get(),
+            "baudrate": self.baudrate_var.get()
+        }
+        try:
+            # Test port connection before saving
+            test_serial = serial.Serial(port=settings["port"],
+                                        baudrate=int(settings["baudrate"]),
+                                        timeout=1)
+            test_serial.close()
+
+            # Save settings if port is valid
+            with open('settings.json', 'w') as f:
+                json.dump(settings, f)
+            self.logger.info("Settings saved successfully")
+
+            # Reconnect serial with new settings
+            self.serial_controller = SerialComsController(
+                port=settings["port"], baudrate=int(settings["baudrate"]))
+
+            MessageDialog(title="Settings Saved",
+                          message="Settings updated successfully",
+                          buttons=["OK"]).show()
+        except serial.SerialException as e:
+            self.logger.error(f"Error with serial port: {e}")
+            self.show_error_dialog(
+                "Port Error",
+                f"Could not connect to {settings['port']}. Please select another port."
+            )
+        except Exception as e:
+            self.logger.error(f"Error saving settings: {e}")
+            self.show_error_dialog("Settings Error", str(e))
+
+    def load_settings(self):
+        """Load settings from JSON file and apply them"""
+        try:
+            # Default settings
+            default_settings = {"port": "COM8", "baudrate": "9600"}
+
+            if os.path.exists('settings.json'):
+                with open('settings.json', 'r') as f:
+                    settings = json.load(f)
+            else:
+                settings = default_settings
+
+            # Apply settings to GUI components
+            self.port_var.set(settings.get("port", default_settings["port"]))
+            self.baudrate_var.set(
+                settings.get("baudrate", default_settings["baudrate"]))
+
+            # Update initial serial connection with loaded settings
+            self.serial_controller = SerialComsController(
+                port=settings["port"], baudrate=int(settings["baudrate"]))
+
+            self.logger.info(
+                f"Settings loaded - Port: {settings['port']}, Baudrate: {settings['baudrate']}"
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error loading settings: {e}")
+            # Fall back to defaults on error
+            self.port_var.set("COM8")
+            self.baudrate_var.set("9600")
 
     def setup_history_tab(self):
         # Create controls frame
@@ -366,6 +495,12 @@ class GUI(ttk.Window):
         self.start_button.configure(state="disabled")
 
         try:
+            if not self.serial_controller:
+                self.logger.error("Serial controller not initialized")
+                self.show_error_dialog("Initialization Error",
+                                       "Serial controller not initialized")
+                return
+
             # Start the process on Arduino
             self.serial_controller.start_process()
             self.logger.info("Processing sequence started")
@@ -429,6 +564,13 @@ class GUI(ttk.Window):
                 "Processing Error",
                 f"An error occurred during processing: {str(e)}")
         finally:
+
+            if not self.serial_controller:
+                self.logger.error("Serial controller not initialized")
+                self.show_error_dialog("Initialization Error",
+                                       "Serial controller not initialized")
+                return
+
             self.serial_controller.reset_all_devices()
             self.start_button.configure(state="disabled")
 
