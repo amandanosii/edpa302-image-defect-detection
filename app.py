@@ -4,216 +4,30 @@ application is a simple quality control system that uses an Arduino Mega
 for controlling motors, LCD displays, buzzers and Webcam
 """
 
-# pip install ttkbootstrap pillow simpleitk numpy scikit-image opencv-python pyserial
+# pip install ttkbootstrap pillow simpleitk numpy scikit-image opencv-python pyserial # noqa
+
+import time
+import logging
+import json
+import os
+from threading import Thread
+from datetime import datetime
+
+import serial
+import cv2
+import numpy as np
 
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import LEFT, RIGHT, BOTTOM, Y, X, BOTH, TOP
 from ttkbootstrap.dialogs import MessageDialog
+
 from PIL import Image, ImageTk
-
-import SimpleITK as sitk
-import numpy as np
-from skimage import measure
-import cv2
-import time
-from threading import Thread
-from datetime import datetime
-import json
-import os
-import serial
-import logging
-from logging.handlers import RotatingFileHandler
-
-
-# Configure logging
-def setup_logging():
-    log_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    log_file = 'quality_control.log'
-
-    # Create handlers
-    file_handler = RotatingFileHandler(log_file,
-                                       maxBytes=5 * 1024 * 1024,
-                                       backupCount=5)
-    file_handler.setFormatter(log_formatter)
-
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(log_formatter)
-
-    # Create logger
-    logger = logging.getLogger('QualityControl')
-    logger.setLevel(logging.INFO)
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
-
-    return logger
-
+from utils import setup_logging
+from controllers import MultimediaController, SerialComsController
+from services import ImageProcessingService
 
 LOGGER = setup_logging()
 TITLE = "Automatic Quality Control System"
-
-
-class MultimediaController:
-
-    def __init__(self, camera_index=0):
-        self.logger = logging.getLogger('QualityControl.Multimedia')
-        self.camera_index = camera_index
-
-        try:
-            self.cap = cv2.VideoCapture(self.camera_index)
-            if not self.cap.isOpened():
-                raise Exception("Could not open video device")
-            self.logger.info(f"Webcam {camera_index} initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Failed to initialize webcam: {e}")
-            raise
-
-    def capture_images(self, save_folder='captured_images'):
-        images = []
-        try:
-            if not os.path.exists(save_folder):
-                os.makedirs(save_folder)
-                self.logger.info(f"Created image save folder: {save_folder}")
-
-            for i in range(4):
-                ret, frame = self.cap.read()
-                if not ret:
-                    self.logger.error(f"Failed to capture image {i+1}")
-                    continue
-
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                filename = os.path.join(save_folder, f'image_{timestamp}.png')
-                cv2.imwrite(filename, frame)
-                images.append(filename)
-                self.logger.info(f"Captured and saved image: {filename}")
-                time.sleep(8)
-
-            return images
-        except Exception as e:
-            self.logger.error(f"Error during image capture: {e}")
-            return []
-
-    def __del__(self):
-        if hasattr(self, 'cap') and self.cap.isOpened():
-            self.cap.release()
-            self.logger.info("Webcam released")
-
-
-class SerialComsController:
-
-    def __init__(self, port='COM8', baudrate=9600, timeout=1):
-        self.logger = logging.getLogger('QualityControl.Serial')
-        self.ser = None
-        try:
-            self.ser = serial.Serial(port, baudrate, timeout=timeout)
-            time.sleep(2)
-            self.logger.info(f"Serial connection established on {port}")
-        except serial.SerialException as e:
-            self.logger.error(f"Error opening serial port {port}: {e}")
-            raise
-
-    def send_command(self, command):
-        try:
-            if self.ser and self.ser.is_open:
-                self.ser.write(f"{command}\n".encode())
-                self.logger.info(f"Sent command: {command}")
-            else:
-                self.logger.error("Serial port is not open")
-        except Exception as e:
-            self.logger.error(f"Error sending command {command}: {e}")
-
-    def start_process(self):
-        self.send_command("START")
-
-    def handle_defect(self):
-        self.send_command("DEFECT")
-
-    def handle_normal(self):
-        self.send_command("NORMAL")
-
-    def reset_all_devices(self):
-        self.send_command("RESET")
-
-    def __del__(self):
-        if hasattr(self, 'ser') and self.ser and self.ser.is_open:
-            self.ser.close()
-            self.logger.info("Serial connection closed")
-
-
-class ImageProcessingService:
-
-    def __init__(self):
-        self.logger = logging.getLogger('QualityControl.ImageProcessing')
-
-    def process_image_for_defects(self, image_path):
-        try:
-            self.logger.info(f"Processing image for defects: {image_path}")
-
-            # Read and process image
-            image = sitk.ReadImage(image_path)
-            image_array = sitk.GetArrayFromImage(image)
-            image_gray = np.mean(image_array, axis=2)
-
-            # Threshold and mask
-            image_gray_sitk = sitk.GetImageFromArray(image_gray)
-            otsu_filter = sitk.OtsuThresholdImageFilter()
-            gray_image = sitk.Cast(
-                sitk.IntensityWindowing(image_gray_sitk,
-                                        windowMinimum=0,
-                                        windowMaximum=255), sitk.sitkFloat32)
-            mask = otsu_filter.Execute(gray_image)
-            mask = sitk.Cast(mask == 0, sitk.sitkUInt8)
-            masked_image = sitk.Mask(image_gray_sitk, mask)
-            result_image = sitk.GetArrayFromImage(masked_image)
-
-            contours = measure.find_contours(result_image, level=0.5)
-
-            if not contours:
-                self.logger.warning("No contours found in the image")
-                return result_image, False
-
-            largest_contour = max(contours, key=lambda x: len(x))
-
-            # Calculate metrics
-            mask_array = sitk.GetArrayFromImage(mask)
-            object_area = np.sum(mask_array)
-
-            min_row, min_col = np.min(largest_contour, axis=0)
-            max_row, max_col = np.max(largest_contour, axis=0)
-            width = max_col - min_col
-            height = max_row - min_row
-            bounding_box_area = width * height
-
-            rectangularity = object_area / bounding_box_area
-
-            # Convert to RGB for annotation
-            result_rgb = cv2.cvtColor(result_image.astype(np.uint8),
-                                      cv2.COLOR_GRAY2RGB)
-
-            # Draw bounding box
-            cv2.rectangle(result_rgb, (int(min_col), int(min_row)),
-                          (int(max_col), int(max_row)), (255, 0, 0), 2)
-
-            # Add rectangularity score
-            text = f"         {rectangularity:.3f}"
-            cv2.putText(result_rgb, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                        1, (0, 255, 255), 2)
-
-            self.logger.info(
-                f"Image processing complete. Rectangularity: {rectangularity:.4f}"
-            )
-
-            # Determine if there are defects
-            has_defects = rectangularity < 0.7 or rectangularity > 0.95
-
-            return result_rgb, has_defects
-
-        except Exception as e:
-            self.logger.error(f"Error processing image: {e}")
-            return None, False
-        except Exception as e:
-            self.logger.error(f"Error processing image: {e}")
-            return None, True
 
 
 class TextHandler(logging.Handler):
@@ -254,8 +68,8 @@ class GUI(ttk.Window):
             self.logger.error(f"Failed to initialize controllers: {e}")
             self.show_error_dialog(
                 "Initialization Error",
-                "Failed to initialize system components. Check the log for details."
-            )
+                "Failed to initialize system components. Check the log for " +
+                "details.")
 
         self.processing_active = False
         self.current_display = "images"
@@ -388,8 +202,8 @@ class GUI(ttk.Window):
             self.logger.error(f"Error with serial port: {e}")
             self.show_error_dialog(
                 "Port Error",
-                f"Could not connect to {settings['port']}. Please select another port."
-            )
+                f"Could not connect to {settings['port']}. Please select " +
+                "another port.")
         except Exception as e:
             self.logger.error(f"Error saving settings: {e}")
             self.show_error_dialog("Settings Error", str(e))
@@ -529,9 +343,9 @@ class GUI(ttk.Window):
             self.multimedia_controller = MultimediaController(
                 camera_index=int(settings["camera"]))
 
-            self.logger.info(
-                f"Settings loaded - Port: {settings['port']}, Baudrate: {settings['baudrate']}, Camera: {settings['camera']}"
-            )
+            self.logger.info(f"Settings loaded - Port: {settings['port']}, " +
+                             f"Baudrate: {settings['baudrate']}, " +
+                             f"Camera: {settings['camera']}")
 
         except Exception as e:
             self.logger.error(f"Error loading settings: {e}")
@@ -607,8 +421,8 @@ class GUI(ttk.Window):
 
         dialog = MessageDialog(
             title="Processing Complete",
-            message=
-            f"Image processing completed successfully!\n\nProcessing Time: {duration:.1f} seconds",
+            message="Image processing completed successfully!\n\n" +
+            f"Processing Time: {duration:.1f} seconds",
             buttons=["View History", "OK"],
             command=handle_result)
         dialog.show()
@@ -706,8 +520,8 @@ class GUI(ttk.Window):
     def process_and_update_display(self, frame_index, image_path):
         try:
             # Process image
-            result_image, has_defects = self.image_processor.process_image_for_defects(
-                image_path)
+            _x = self.image_processor.process_image_for_defects(image_path)
+            result_image, has_defects = _x
 
             # Convert result_image to PhotoImage and display
             if isinstance(result_image, np.ndarray):
